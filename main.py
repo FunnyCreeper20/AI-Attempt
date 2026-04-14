@@ -11,7 +11,7 @@ HIDDEN_SIZE = 64
 EPOCHS = 40
 LEARNING_RATE = 0.08  #A higher number can make it more unstable .05 < x < .15 
 BATCH_SIZE = 512      #Controls how many test cases it goes through before updating the weights
-TEMPERATURE = 10      #Higher temperature makes the output more random, lower makes it more repetitive but conservative
+TEMPERATURE = 1       #Higher temperature makes the output more random, lower makes it more repetitive but conservative
 CONTEXT_SIZE = 4      #This is just the number of words it looks at to predict the next word
 
 
