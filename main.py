@@ -11,14 +11,21 @@ HIDDEN_SIZE = 64
 EPOCHS = 40
 LEARNING_RATE = 0.08  #A higher number can make it more unstable .05 < x < .15 
 BATCH_SIZE = 512      #Controls how many test cases it goes through before updating the weights
-TEMPERATURE = 1       #Higher temperature makes the output more random, lower makes it more repetitive but conservative
+TEMPERATURE = 10      #Higher temperature makes the output more random, lower makes it more repetitive but conservative
 CONTEXT_SIZE = 4      #This is just the number of words it looks at to predict the next word
 
 
 def build_context_lookup(context_indices, target_indices, idx_to_word):
     lookup = {}
     for context, target in zip(context_indices, target_indices):
-        lookup[tuple(context.tolist())] = idx_to_word[target]
+        key = tuple(context.tolist())
+        word = idx_to_word[target]
+
+        if key not in lookup:
+            lookup[key] = []
+
+        lookup[key].append(word)
+
     return lookup
 
 
@@ -33,9 +40,9 @@ def predict_next_word(
 ):
     context_indices = [word_to_idx[word] for word in context_words]
     if context_lookup is not None:
-        exact_match = context_lookup.get(tuple(context_indices))
-        if exact_match is not None:
-            return exact_match
+        matches = context_lookup.get(tuple(context_indices))
+        if matches is not None:
+            return rng.choice(matches)
 
     probabilities = model.predict_distribution(context_indices, temperature=temperature)
     probabilities[word_to_idx[BOS_TOKEN]] = 0.0
