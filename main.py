@@ -11,47 +11,119 @@ HIDDEN_SIZE = 64
 EPOCHS = 40
 LEARNING_RATE = 0.08  #A higher number can make it more unstable .05 < x < .15 
 BATCH_SIZE = 512      #Controls how many test cases it goes through before updating the weights
-TEMPERATURE = 10      #Higher temperature makes the output more random, lower makes it more repetitive but conservative
+TEMPERATURE = 1       #Higher temperature makes the output more random, lower makes it more repetitive but conservative
 CONTEXT_SIZE = 4      #This is just the number of words it looks at to predict the next word
+alpha = 0.7           #Blend weight for combining neural and lookup probabilities (0 for pure neural, 1 for pure lookup)
 
 
 def build_context_lookup(context_indices, target_indices, idx_to_word):
     lookup = {}
+
     for context, target in zip(context_indices, target_indices):
         key = tuple(context.tolist())
         word = idx_to_word[target]
 
         if key not in lookup:
-            lookup[key] = []
+            lookup[key] = {}
 
-        lookup[key].append(word)
+        if word not in lookup[key]:
+            lookup[key][word] = 0
+
+        lookup[key][word] += 1
 
     return lookup
 
 
-def predict_next_word(
+def predict_next_word( # I DID ORIGINALLY WROTE THIS FUNCTION, BUT THEN ASKED AI TO HELP ME IMPROVE IT.
     context_words,
     model,
     word_to_idx,
     idx_to_word,
     rng,
-    temperature=1.0,
+    temperature=TEMPERATURE,
     context_lookup=None,
+    alpha=alpha,
+    step=0,  # optional for future EOS scheduling
 ):
+    vocab_size = len(word_to_idx)
     context_indices = [word_to_idx[word] for word in context_words]
+
+    # =========================
+    # 1. Neural probabilities
+    # =========================
+    neural_probs = model.predict_distribution(
+        context_indices,
+        temperature=temperature
+    )
+
+    neural_probs[word_to_idx[BOS_TOKEN]] = 0.0
+
+    neural_sum = neural_probs.sum()
+    if neural_sum > 0:
+        neural_probs = neural_probs / neural_sum
+
+
+    # =========================
+    # 2. Lookup probabilities
+    # =========================
+    lookup_probs = np.zeros(vocab_size, dtype=float)
+
     if context_lookup is not None:
         matches = context_lookup.get(tuple(context_indices))
-        if matches is not None:
-            return rng.choice(matches)
 
-    probabilities = model.predict_distribution(context_indices, temperature=temperature)
-    probabilities[word_to_idx[BOS_TOKEN]] = 0.0
-    probability_sum = probabilities.sum()
-    if probability_sum == 0:
-        next_word_idx = word_to_idx[EOS_TOKEN]
+        if matches:
+            words = list(matches.keys())
+            counts = np.array(list(matches.values()), dtype=float)
+
+            # temperature-aware scaling
+            counts = counts ** (1.0 / max(temperature, 1e-6))
+
+            total = counts.sum()
+            if total > 0:
+                probs = counts / total
+
+                for word, prob in zip(words, probs):
+                    lookup_probs[word_to_idx[word]] = prob
+
+
+    # =========================
+    # 3. Blend distributions
+    # =========================
+    if lookup_probs.sum() > 0:
+        final_probs = alpha * lookup_probs + (1 - alpha) * neural_probs
     else:
-        probabilities /= probability_sum
-        next_word_idx = rng.choice(len(probabilities), p=probabilities)
+        final_probs = neural_probs
+
+
+    # =========================
+    # 4. Clean invalid tokens
+    # =========================
+    eos_idx = word_to_idx[EOS_TOKEN]
+    bos_idx = word_to_idx[BOS_TOKEN]
+
+    final_probs[bos_idx] = 0.0
+
+    # optional: mild EOS control (prevents instant stopping)
+    # remove if you want fully natural EOS behavior
+    final_probs[eos_idx] *= 0.3 + 0.7 / (1 + step * 0.5)
+
+
+    # =========================
+    # 5. Normalize safely
+    # =========================
+    total = final_probs.sum()
+
+    if total <= 0:
+        return idx_to_word[eos_idx]
+
+    final_probs = final_probs / total
+
+
+    # =========================
+    # 6. Sample
+    # =========================
+    next_word_idx = rng.choice(vocab_size, p=final_probs)
+
     return idx_to_word[next_word_idx]
 
 
