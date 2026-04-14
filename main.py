@@ -33,6 +33,43 @@ def build_context_lookup(context_indices, target_indices, idx_to_word):
 
     return lookup
 
+def top_k_filter(probs, k):
+    if k <= 0 or k >= len(probs):
+        return probs
+
+    indices = np.argpartition(probs, -k)[-k:]
+    mask = np.zeros_like(probs)
+    mask[indices] = probs[indices]
+
+    total = mask.sum()
+    if total > 0:
+        mask /= total
+
+    return mask
+
+
+def top_p_filter(probs, p):
+    sorted_idx = np.argsort(probs)[::-1]
+    sorted_probs = probs[sorted_idx]
+
+    cumulative = np.cumsum(sorted_probs)
+
+    cutoff = np.where(cumulative >= p)[0]
+    if len(cutoff) == 0:
+        return probs
+
+    cutoff_idx = cutoff[0] + 1
+
+    keep_idx = sorted_idx[:cutoff_idx]
+
+    mask = np.zeros_like(probs)
+    mask[keep_idx] = probs[keep_idx]
+
+    total = mask.sum()
+    if total > 0:
+        mask /= total
+
+    return mask
 
 def predict_next_word( # I DID ORIGINALLY WROTE THIS FUNCTION, BUT THEN ASKED AI TO HELP ME IMPROVE IT.
     context_words,
@@ -122,7 +159,24 @@ def predict_next_word( # I DID ORIGINALLY WROTE THIS FUNCTION, BUT THEN ASKED AI
     # =========================
     # 6. Sample
     # =========================
-    next_word_idx = rng.choice(vocab_size, p=final_probs)
+    TOP_K = 30      # adjust: 20–50 is typical
+    TOP_P = 0.9     # nucleus threshold
+
+    filtered_probs = final_probs.copy()
+
+    # --- Top-K ---
+    filtered_probs = top_k_filter(filtered_probs, TOP_K)
+
+    # --- Top-P (nucleus) ---
+    filtered_probs = top_p_filter(filtered_probs, TOP_P)
+
+    # Safety fallback
+    if filtered_probs.sum() <= 0:
+        return idx_to_word[eos_idx]
+
+    filtered_probs /= filtered_probs.sum()
+
+    next_word_idx = rng.choice(vocab_size, p=filtered_probs)
 
     return idx_to_word[next_word_idx]
 
@@ -168,16 +222,31 @@ seed_words = choose_seed_words(
     CONTEXT_SIZE,
 )
 generation_rng = np.random.default_rng()
+generated = seed_words[:]
 
-predicted_word = predict_next_word(
-    seed_words,
-    model,
-    word_to_idx,
-    idx_to_word,
-    generation_rng,
-    temperature=TEMPERATURE,
-    context_lookup=context_lookup,
-)
-if predicted_word == EOS_TOKEN:
-    predicted_word = ""
-print(f"AI: {predicted_word}")
+MAX_STEPS = 40
+
+for step in range(MAX_STEPS):
+    context = generated[-CONTEXT_SIZE:]
+
+    next_word = predict_next_word(
+        context,
+        model,
+        word_to_idx,
+        idx_to_word,
+        generation_rng,
+        temperature=TEMPERATURE,
+        context_lookup=context_lookup,
+        alpha=alpha,
+        step=step,
+    )
+
+    if next_word == EOS_TOKEN:
+        break
+
+    generated.append(next_word)
+
+# Remove BOS tokens if present
+generated = [w for w in generated if w != BOS_TOKEN]
+
+print("AI:", " ".join(generated))
