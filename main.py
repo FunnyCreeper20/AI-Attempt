@@ -1,252 +1,120 @@
-import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import re
 
-from neural_language_model import NeuralBigramModel
-from text_dataset import BOS_TOKEN, EOS_TOKEN, build_training_data, tokenize
+# The CUSTOMIZABLE things:
+iterations = 1500 # 500-1500 iterations is a good amount because it tests the AI that many times
+learning_rate = 0.005 # Smaller rate means more stable but longer, while larger means less stable but shorter
+temperature = 1 # Smaller number means more conservative. Larger means more radical
+question = "The capital of France is" # This is the question being asked. Relate it to the corpus
 
+# Page 2: The Corpus
+with open("corpus.txt", "r") as file:
+    # This regex removes punctuation so 'France.' would become 'france'
+    text = re.sub(r'[^\w\s]', '', file.read().lower())
+words = text.split()
+vocab = sorted(list(set(words)))
+vocab_size = len(vocab)
 
-with open("corpus.txt", "r", encoding="utf-8") as corpus_file:
-    CORPUS = corpus_file.read()
-TRAINING_RNG = np.random.default_rng(7)
-HIDDEN_SIZE = 64
-EPOCHS = 40
-LEARNING_RATE = 0.08  #A higher number can make it more unstable .05 < x < .15 
-BATCH_SIZE = 512      #Controls how many test cases it goes through before updating the weights
-TEMPERATURE = 1       #Higher temperature makes the output more random, lower makes it more repetitive but conservative
-CONTEXT_SIZE = 4      #This is just the number of words it looks at to predict the next word
-alpha = 0.7           #Blend weight for combining neural and lookup probabilities (0 for pure neural, 1 for pure lookup)
+# Page 4: Tokenization
+word_to_int = {w: i for i, w in enumerate(vocab)}
+int_to_word = {i: w for w, i in word_to_int.items()}
+tokens = torch.tensor([word_to_int[w] for w in words], dtype=torch.long)
 
+embedding_dim = 16
+embedding_table = nn.Embedding(vocab_size, embedding_dim)
 
-def build_context_lookup(context_indices, target_indices, idx_to_word):
-    lookup = {}
+# This is the forward pass
+class AttentionHead(nn.Module):
+    def __init__(self, emb_dim):
+        super().__init__()
+        self.Wq = nn.Linear(emb_dim, emb_dim, bias=False)
+        self.Wk = nn.Linear(emb_dim, emb_dim, bias=False)
+        self.Wv = nn.Linear(emb_dim, emb_dim, bias=False)
 
-    for context, target in zip(context_indices, target_indices):
-        key = tuple(context.tolist())
-        word = idx_to_word[target]
+    def forward(self, x):
+        Q = self.Wq(x)
+        K = self.Wk(x)
+        V = self.Wv(x)
+        scores = (Q @ K.transpose(-2, -1)) / (embedding_dim**0.5)
+        weights = F.softmax(scores, dim=-1)
+        return weights @ V
 
-        if key not in lookup:
-            lookup[key] = {}
+class TransformerBlock(nn.Module):
+    def __init__(self, emb_dim):
+        super().__init__()
+        self.attention = AttentionHead(emb_dim)
+        self.ln = nn.LayerNorm(emb_dim)
 
-        if word not in lookup[key]:
-            lookup[key][word] = 0
+    def forward(self, x):
+        x = x + self.attention(x)
+        return self.ln(x)
 
-        lookup[key][word] += 1
+# Create the model components
+model = TransformerBlock(embedding_dim)
+# FIX: Move lm_head outside the loop so it can actually be trained!
+lm_head = nn.Linear(embedding_dim, vocab_size)
 
-    return lookup
-
-def top_k_filter(probs, k):
-    if k <= 0 or k >= len(probs):
-        return probs
-
-    indices = np.argpartition(probs, -k)[-k:]
-    mask = np.zeros_like(probs)
-    mask[indices] = probs[indices]
-
-    total = mask.sum()
-    if total > 0:
-        mask /= total
-
-    return mask
-
-
-def top_p_filter(probs, p):
-    sorted_idx = np.argsort(probs)[::-1]
-    sorted_probs = probs[sorted_idx]
-
-    cumulative = np.cumsum(sorted_probs)
-
-    cutoff = np.where(cumulative >= p)[0]
-    if len(cutoff) == 0:
-        return probs
-
-    cutoff_idx = cutoff[0] + 1
-
-    keep_idx = sorted_idx[:cutoff_idx]
-
-    mask = np.zeros_like(probs)
-    mask[keep_idx] = probs[keep_idx]
-
-    total = mask.sum()
-    if total > 0:
-        mask /= total
-
-    return mask
-
-def predict_next_word( # I DID ORIGINALLY WROTE THIS FUNCTION, BUT THEN ASKED AI TO HELP ME IMPROVE IT.
-    context_words,
-    model,
-    word_to_idx,
-    idx_to_word,
-    rng,
-    temperature=TEMPERATURE,
-    context_lookup=None,
-    alpha=alpha,
-    step=0,  # optional for future EOS scheduling
-):
-    vocab_size = len(word_to_idx)
-    context_indices = [word_to_idx[word] for word in context_words]
-
-    # =========================
-    # 1. Neural probabilities
-    # =========================
-    neural_probs = model.predict_distribution(
-        context_indices,
-        temperature=temperature
-    )
-
-    neural_probs[word_to_idx[BOS_TOKEN]] = 0.0
-
-    neural_sum = neural_probs.sum()
-    if neural_sum > 0:
-        neural_probs = neural_probs / neural_sum
-
-
-    # =========================
-    # 2. Lookup probabilities
-    # =========================
-    lookup_probs = np.zeros(vocab_size, dtype=float)
-
-    if context_lookup is not None:
-        matches = context_lookup.get(tuple(context_indices))
-
-        if matches:
-            words = list(matches.keys())
-            counts = np.array(list(matches.values()), dtype=float)
-
-            # temperature-aware scaling
-            counts = counts ** (1.0 / max(temperature, 1e-6))
-
-            total = counts.sum()
-            if total > 0:
-                probs = counts / total
-
-                for word, prob in zip(words, probs):
-                    lookup_probs[word_to_idx[word]] = prob
-
-
-    # =========================
-    # 3. Blend distributions
-    # =========================
-    if lookup_probs.sum() > 0:
-        final_probs = alpha * lookup_probs + (1 - alpha) * neural_probs
-    else:
-        final_probs = neural_probs
-
-
-    # =========================
-    # 4. Clean invalid tokens
-    # =========================
-    eos_idx = word_to_idx[EOS_TOKEN]
-    bos_idx = word_to_idx[BOS_TOKEN]
-
-    final_probs[bos_idx] = 0.0
-
-    # optional: mild EOS control (prevents instant stopping)
-    # remove if you want fully natural EOS behavior
-    final_probs[eos_idx] *= 0.3 + 0.7 / (1 + step * 0.5)
-
-
-    # =========================
-    # 5. Normalize safely
-    # =========================
-    total = final_probs.sum()
-
-    if total <= 0:
-        return idx_to_word[eos_idx]
-
-    final_probs = final_probs / total
-
-
-    # =========================
-    # 6. Sample
-    # =========================
-    TOP_K = 30      # adjust: 20–50 is typical
-    TOP_P = 0.9     # nucleus threshold
-
-    filtered_probs = final_probs.copy()
-
-    # --- Top-K ---
-    filtered_probs = top_k_filter(filtered_probs, TOP_K)
-
-    # --- Top-P (nucleus) ---
-    filtered_probs = top_p_filter(filtered_probs, TOP_P)
-
-    # Safety fallback
-    if filtered_probs.sum() <= 0:
-        return idx_to_word[eos_idx]
-
-    filtered_probs /= filtered_probs.sum()
-
-    next_word_idx = rng.choice(vocab_size, p=filtered_probs)
-
-    return idx_to_word[next_word_idx]
-
-
-def choose_seed_words(user_text, word_to_idx, fallback_words, context_size):
-    prompt_tokens = tokenize(user_text)
-    known_prompt_tokens = [token for token in prompt_tokens if token in word_to_idx]
-
-    if len(known_prompt_tokens) >= context_size:
-        return known_prompt_tokens[-context_size:]
-
-    missing_count = context_size - len(known_prompt_tokens)
-    return fallback_words[-missing_count:] + known_prompt_tokens
-
-
-
-
-words, vocab, word_to_idx, idx_to_word, context_indices, target_indices = build_training_data(
-    CORPUS, CONTEXT_SIZE
+# 1. Update the Optimizer to include EVERYTHING
+# We need to train the Embeddings, the Transformer, AND the Output Head
+optimizer = torch.optim.Adam(
+    list(model.parameters()) +
+    list(embedding_table.parameters()) +
+    list(lm_head.parameters()),
+    lr=learning_rate  # Slightly lower learning rate for more stability
 )
 
-model = NeuralBigramModel(
-    vocab_size=len(vocab),
-    hidden_size=HIDDEN_SIZE,
-    context_size=CONTEXT_SIZE,
-    rng=TRAINING_RNG,
-)
-model.train(
-    context_indices,
-    target_indices,
-    epochs=EPOCHS,
-    learning_rate=LEARNING_RATE,
-    batch_size=BATCH_SIZE,
-)
-context_lookup = build_context_lookup(context_indices, target_indices, idx_to_word)
+print("Starting deep training...")
+# Increase to 1500 iterations to let the weights settle
+for epoch in range(iterations+1):
+    optimizer.zero_grad()
 
-user_prompt = input("You: ").strip()
-default_seed_words = [BOS_TOKEN] * CONTEXT_SIZE
-seed_words = choose_seed_words(
-    user_prompt,
-    word_to_idx,
-    default_seed_words,
-    CONTEXT_SIZE,
-)
-generation_rng = np.random.default_rng()
-generated = seed_words[:]
+    # Forward pass
+    x_emb = embedding_table(tokens)
+    output = model(x_emb)
+    logits = lm_head(output)
 
-MAX_STEPS = 40
+    # We shift the labels so the model learns to predict the NEXT word
+    # logits[:-1] is the prediction, tokens[1:] is the actual next word
+    loss = F.cross_entropy(logits[:-1], tokens[1:])
 
-for step in range(MAX_STEPS):
-    context = generated[-CONTEXT_SIZE:]
+    loss.backward()
+    optimizer.step()
 
-    next_word = predict_next_word(
-        context,
-        model,
-        word_to_idx,
-        idx_to_word,
-        generation_rng,
-        temperature=TEMPERATURE,
-        context_lookup=context_lookup,
-        alpha=alpha,
-        step=step,
-    )
+    if epoch % 500 == 0:
+        print(f"Epoch {epoch}, Loss: {loss.item():.4f}")
 
-    if next_word == EOS_TOKEN:
-        break
 
-    generated.append(next_word)
+# 2. Improved Question Function with "Thinking" (Top Guesses)
+def ask_question(prompt, temp=temperature):
+    model.eval()
+    words_in_prompt = prompt.lower().split()
 
-# Remove BOS tokens if present
-generated = [w for w in generated if w != BOS_TOKEN]
+    # Check if words exist in our vocab
+    for w in words_in_prompt:
+        if w not in word_to_int:
+            return f"Error: '{w}' is not in my corpus!"
 
-print("AI:", " ".join(generated))
+    input_ids = torch.tensor([word_to_int[w] for w in words_in_prompt], dtype=torch.long)
+
+    with torch.no_grad(): # Disable the "Backward Pass" (Page 3) math to save memory
+        embeddings = embedding_table(input_ids)
+        output = model(embeddings) # Pages 13 - 19
+        next_word_logits = lm_head(output[-1]) / temp
+        probs = F.softmax(next_word_logits, dim=-1)
+
+        # See the top 2 guesses to check the AI's "confidence"
+        top_probs, top_ids = torch.topk(probs, 10)
+        print(f"\nAI is thinking...")
+        for i in range(10):
+            print(f"  Option {i + 1}: {int_to_word[top_ids[i].item()]} ({top_probs[i].item() * 100:.1f}%)")
+
+        next_word_id = torch.argmax(probs).item()
+
+    return int_to_word[next_word_id]
+
+
+# Final Test
+answer = ask_question(question)
+print(f"Final Prediction: {answer}")
