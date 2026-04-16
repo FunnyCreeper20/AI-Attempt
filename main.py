@@ -97,6 +97,7 @@ def ask_question(prompt, temp=temperature):
         if w not in word_to_int:
             return f"Error: '{w}' is not in my corpus!"
 
+    # This code actually generates the vectors. PyTorch just renames them to tensors
     input_ids = torch.tensor([word_to_int[w] for w in words_in_prompt], dtype=torch.long)
 
     with torch.no_grad(): # Disable the "Backward Pass" (Page 3) math to save memory
