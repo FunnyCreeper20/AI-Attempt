@@ -68,7 +68,7 @@ optimizer = torch.optim.Adam( # This just tells the optimizer
 )
 
 print("Starting deep training...")
-# Increase to 1500 iterations to let the weights settle
+# Increase to iterations number of iterations to let the weights settle
 for epoch in range(iterations+1):
     optimizer.zero_grad() # We clear the previous sentence's mistakes because if we kept them, the model would get confused on what it is trying to change
     # Forward pass
