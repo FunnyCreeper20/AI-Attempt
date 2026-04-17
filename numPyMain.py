@@ -95,8 +95,64 @@ def ask_question(prompt, temp=temperature):
     next_word_id = np.argmax(probs)
     return int_to_word[next_word_id]
 
-# Final Test
-# Note: Since we didn't write the 500 lines of calculus for training, 
-# this will give a random word.
-answer = ask_question(question)
-print(f"Final Prediction: {answer}")
+# BACKWARDS PASS BEGINS
+# --- STEP 1: INITIALIZE GRADIENTS ---
+# These are the "Fixes" we will apply to the weights
+learning_rate = 0.005
+
+for epoch in range(iterations):
+    # --- FORWARD PASS (As before, but saving variables for backprop) ---
+    # 1. Embedding
+    x = embedding_table[tokens] # Shape: [Sequence_Length, 16]
+    
+    # 2. Attention
+    Q = x @ Wq
+    K = x @ Wk
+    V = x @ Wv
+    scores = (Q @ K.T) / np.sqrt(embedding_dim)
+    probs = softmax(scores) # The Attention Map (Page 16)
+    context = probs @ V
+    
+    # 3. Output
+    logits = context @ lm_head_weight # Page 21
+    predictions = softmax(logits)
+
+    # --- BACKWARD PASS (Page 3: Fixing what's wrong) ---
+    
+    # 1. Error at the Output (Difference between guess and reality)
+    # We create a 'target' matrix (One-Hot) to see where we missed
+    target = np.zeros_like(predictions)
+    for i, t_idx in enumerate(tokens[1:]): # Predicting next word
+        target[i, t_idx] = 1.0
+    
+    d_logits = (predictions[:-1] - target) / len(tokens) # Initial error signal
+
+    # 2. Gradient for the Mouth (lm_head)
+    # How much did the output weights contribute to the error?
+    d_lm_head = context[:-1].T @ d_logits
+    d_context = d_logits @ lm_head_weight.T
+
+    # 3. Gradient for Attention (The Calculus of Page 14)
+    # This is the "Chain Rule" in action
+    d_V = probs[:-1].T @ d_context
+    d_probs = d_context @ V.T
+    
+    # Backprop through Softmax
+    d_scores = probs[:-1] * (d_probs - np.sum(d_probs * probs[:-1], axis=-1, keepdims=True))
+    d_scores /= np.sqrt(embedding_dim)
+
+    # Gradients for Wq, Wk, Wv (The Lenses)
+    d_Wq = x[:-1].T @ (d_scores @ K[:-1])
+    d_Wk = x[:-1].T @ (d_scores.T @ Q[:-1])
+
+    # --- STEP 2: UPDATE WEIGHTS (The Optimizer / Page 6) ---
+    # Weight_new = Weight_old - (LR * Gradient)
+    Wq -= learning_rate * d_Wq
+    Wk -= learning_rate * d_Wk
+    Wv -= learning_rate * d_Wv
+    lm_head_weight -= learning_rate * d_lm_head
+
+    if epoch % 100 == 0:
+        # Calculate Loss (Cross Entropy)
+        loss = -np.mean(np.sum(target * np.log(predictions[:-1] + 1e-9), axis=1))
+        print(f"Epoch {epoch}, Loss: {loss:.4f}")
