@@ -1,158 +1,142 @@
 import numpy as np
 import re
 
-# The CUSTOMIZABLE things:
-temperature = 1 
-question = "The capital of France is" 
-top_guess_amount = 5 
-embedding_dim = 16
+# --- 1. CONFIGURATION (The "Knobs") ---
+iterations = 1500  # Slide 6: Number of training tests
+learning_rate = .6  # Slide 6: Size of the "Fix"
+temperature = 1.0  # Slide 16: Radicality/Creativity
+embedding_dim = 16  # Slide 9: Dimension of word "flavor"
+top_guess_amount = 5  # Number of options to show
+question = "The capital of France is"
 
-# Page 2: The Corpus
+# --- 2. DATA PREPARATION (Slide 2 & 4) ---
 with open("corpus.txt", "r") as file:
+    # Clean punctuation so "France." and "France" are the same token
     text = re.sub(r'[^\w\s]', '', file.read().lower())
+
 words = text.split()
 vocab = sorted(list(set(words)))
 vocab_size = len(vocab)
 
-# Page 4: Tokenization
+# Tokenization: Mapping words to ID numbers
 word_to_int = {w: i for i, w in enumerate(vocab)}
 int_to_word = {i: w for w, i in word_to_int.items()}
+tokens = np.array([word_to_int[w] for w in words])
 
-# Page 9: Embedding Table (Initialized with random numbers)
-# In NumPy, this is just a standard 2D array (Matrix)
+# --- 3. INITIALIZATION (Slide 13 & 19) ---
+# Randomly starting weights before the "Millions of tests"
 embedding_table = np.random.randn(vocab_size, embedding_dim) * 0.1
-
-# Page 13: Learned Weight Matrices (Attention)
-# These replace the nn.Linear layers from PyTorch
 Wq = np.random.randn(embedding_dim, embedding_dim) * 0.1
 Wk = np.random.randn(embedding_dim, embedding_dim) * 0.1
 Wv = np.random.randn(embedding_dim, embedding_dim) * 0.1
-
-# Page 19: Layer Norm Parameters (Gamma and Beta)
-gamma = np.ones(embedding_dim)
-beta = np.zeros(embedding_dim)
-
-# The Output "Mouth" (Language Model Head)
 lm_head_weight = np.random.randn(embedding_dim, vocab_size) * 0.1
 
-# Page 16: Softmax function written in NumPy
+
 def softmax(x):
-    e_x = np.exp(x - np.max(x))
+    # Slide 16: Percentage Logic
+    e_x = np.exp(x - np.max(x, axis=-1, keepdims=True))
     return e_x / e_x.sum(axis=-1, keepdims=True)
 
-# 2. Improved Question Function with "Thinking" (The NumPy Forward Pass)
-def ask_question(prompt, temp=temperature):
-    words_in_prompt = prompt.lower().split()
 
-    # Check if words exist in our vocab
-    for w in words_in_prompt:
-        if w not in word_to_int:
-            return f"Error: '{w}' is not in my corpus!"
+# --- 4. TRAINING LOOP (The Backward Pass - Slide 3, 6, 21, 22) ---
+print(f"Starting NumPy Training on {vocab_size} unique words...")
 
-    # Page 10: Convert words to IDs
-    input_ids = [word_to_int[w] for w in words_in_prompt]
+for epoch in range(iterations + 1):
+    # --- FORWARD PASS (Slide 10-17) ---
+    x_emb = embedding_table[tokens]
+    Q = x_emb @ Wq
+    K = x_emb @ Wk
+    V = x_emb @ Wv
 
-    # Page 9: Look up vectors in the Embedding Matrix
-    x = embedding_table[input_ids]
-
-    # Page 13: The Attention Head (Matrix Multiplication)
-    Q = x @ Wq
-    K = x @ Wk
-    V = x @ Wv
-
-    # Page 14: Contextual Relevance (Q * K)
+    # Slide 14: Relevance scores
     scores = (Q @ K.T) / np.sqrt(embedding_dim)
+    attn_weights = softmax(scores)
+    context = attn_weights @ V
 
-    # Page 16: Softmax to get percentages
-    weights = softmax(scores)
-
-    # Page 17: Apply Values to weights
-    attention_output = weights @ V
-
-    # Page 18: Residual Connection (Add original x to the result)
-    x = x + attention_output
-
-    # Page 19: Layer Norm (Gamma and Beta)
-    mean = x.mean(axis=-1, keepdims=True)
-    std = x.std(axis=-1, keepdims=True)
-    x = gamma * (x - mean) / (std + 1e-6) + beta
-
-    # Final Step: Project to Vocabulary (The "Mouth")
-    # We take the vector of the LAST word to predict the next
-    last_word_vector = x[-1]
-    logits = (last_word_vector @ lm_head_weight) / temp
-    
-    # Final Softmax for probability distribution
+    logits = context @ lm_head_weight
     probs = softmax(logits)
 
-    # See the top_guess_amount guesses
+    # --- BACKWARD PASS (Slide 22: Calculus) ---
+    targets = tokens[1:]
+    # Slice everything to N-1 to match the target length
+    x_train = x_emb[:-1]  # [389, 16]
+    q_train = Q[:-1]  # [389, 16]
+    k_train = K[:-1]  # [389, 16]
+    v_train = V[:-1]  # [389, 16]
+    # Crop the attention map to a [389, 389] square
+    attn_train = attn_weights[:-1, :-1]
+
+    # 1. Error signal (How far off were we?)
+    d_logits = probs[:-1].copy()
+    for i, target_idx in enumerate(targets):
+        d_logits[i, target_idx] -= 1.0
+    d_logits /= len(targets)
+
+    # 2. Mouth Gradients (lm_head)
+    dW_head = context[:-1].T @ d_logits  # [16, 389] @ [389, vocab] = [16, vocab]
+    d_context = d_logits @ lm_head_weight.T  # [389, vocab] @ [vocab, 16] = [389, 16]
+
+    # 3. Value Gradients (Wv)
+    d_V = attn_train.T @ d_context  # [389, 389] @ [389, 16] = [389, 16]
+    dWv = x_train.T @ d_V  # [16, 389] @ [389, 16] = [16, 16]
+
+    # 4. Attention Map Gradients (Softmax)
+    d_attn_weights = d_context @ v_train.T  # [389, 16] @ [16, 389] = [389, 389]
+    d_scores = attn_train * (d_attn_weights - np.sum(d_attn_weights * attn_train, axis=-1, keepdims=True))
+    d_scores /= np.sqrt(embedding_dim)
+
+    # 5. Lens Gradients (Wq and Wk) - FIXED ORDER
+    dWq = x_train.T @ (d_scores @ k_train)  # [16, 389] @ ([389, 389] @ [389, 16]) = [16, 16]
+    dWk = x_train.T @ (d_scores.T @ q_train)  # [16, 389] @ ([389, 389] @ [389, 16]) = [16, 16]
+
+    # --- UPDATE WEIGHTS (Slide 6) ---
+    lm_head_weight -= learning_rate * dW_head
+    Wv -= learning_rate * dWv
+    Wq -= learning_rate * dWq
+    Wk -= learning_rate * dWk
+
+    # Update Embeddings (Meanings)
+    for i, t_idx in enumerate(tokens[:-1]):
+        grad_emb = (d_scores[i] @ k_train @ Wq.T) + (d_scores.T[i] @ q_train @ Wk.T) + (d_V[i] @ Wv.T)
+        embedding_table[t_idx] -= learning_rate * grad_emb
+
+    if epoch % 500 == 0:
+        loss = -np.mean(np.log(probs[:-1][range(len(targets)), targets] + 1e-9))
+        print(f"Epoch {epoch}, Loss: {loss:.4f}")
+
+
+# --- 5. INFERENCE (The "Final Exam") ---
+def ask_question(prompt, temp=temperature):
+    words_in_prompt = prompt.lower().split()
+    for w in words_in_prompt:
+        if w not in word_to_int: return f"Error: '{w}' not in corpus"
+
+    # Step-by-Step Forward Pass for the user question
+    input_ids = [word_to_int[w] for w in words_in_prompt]
+    x = embedding_table[input_ids]
+
+    # Attention Logic
+    q_act = x @ Wq
+    k_act = x @ Wk
+    v_act = x @ Wv
+    score_act = (q_act @ k_act.T) / np.sqrt(embedding_dim)
+    weight_act = softmax(score_act)
+    context_act = weight_act @ v_act
+
+    # Output Logic with Temperature
+    logits = (context_act[-1] @ lm_head_weight) / temp
+    probs = softmax(logits)
+
+    # Show Top Guesses
     top_indices = np.argsort(probs)[-top_guess_amount:][::-1]
-    print(f"\nAI is thinking (NumPy Mode)...")
+    print(f"\nAI is thinking about: '{prompt}'")
     for i, idx in enumerate(top_indices):
         print(f"  Option {i + 1}: {int_to_word[idx]} ({probs[idx] * 100:.1f}%)")
 
-    # Page 16: Choice
-    next_word_id = np.argmax(probs)
-    return int_to_word[next_word_id]
+    return int_to_word[np.argmax(probs)]
 
-# BACKWARDS PASS BEGINS
-# --- STEP 1: INITIALIZE GRADIENTS ---
-# These are the "Fixes" we will apply to the weights
-learning_rate = 0.005
 
-for epoch in range(iterations):
-    # --- FORWARD PASS (As before, but saving variables for backprop) ---
-    # 1. Embedding
-    x = embedding_table[tokens] # Shape: [Sequence_Length, 16]
-    
-    # 2. Attention
-    Q = x @ Wq
-    K = x @ Wk
-    V = x @ Wv
-    scores = (Q @ K.T) / np.sqrt(embedding_dim)
-    probs = softmax(scores) # The Attention Map (Page 16)
-    context = probs @ V
-    
-    # 3. Output
-    logits = context @ lm_head_weight # Page 21
-    predictions = softmax(logits)
-
-    # --- BACKWARD PASS (Page 3: Fixing what's wrong) ---
-    
-    # 1. Error at the Output (Difference between guess and reality)
-    # We create a 'target' matrix (One-Hot) to see where we missed
-    target = np.zeros_like(predictions)
-    for i, t_idx in enumerate(tokens[1:]): # Predicting next word
-        target[i, t_idx] = 1.0
-    
-    d_logits = (predictions[:-1] - target) / len(tokens) # Initial error signal
-
-    # 2. Gradient for the Mouth (lm_head)
-    # How much did the output weights contribute to the error?
-    d_lm_head = context[:-1].T @ d_logits
-    d_context = d_logits @ lm_head_weight.T
-
-    # 3. Gradient for Attention (The Calculus of Page 14)
-    # This is the "Chain Rule" in action
-    d_V = probs[:-1].T @ d_context
-    d_probs = d_context @ V.T
-    
-    # Backprop through Softmax
-    d_scores = probs[:-1] * (d_probs - np.sum(d_probs * probs[:-1], axis=-1, keepdims=True))
-    d_scores /= np.sqrt(embedding_dim)
-
-    # Gradients for Wq, Wk, Wv (The Lenses)
-    d_Wq = x[:-1].T @ (d_scores @ K[:-1])
-    d_Wk = x[:-1].T @ (d_scores.T @ Q[:-1])
-
-    # --- STEP 2: UPDATE WEIGHTS (The Optimizer / Page 6) ---
-    # Weight_new = Weight_old - (LR * Gradient)
-    Wq -= learning_rate * d_Wq
-    Wk -= learning_rate * d_Wk
-    Wv -= learning_rate * d_Wv
-    lm_head_weight -= learning_rate * d_lm_head
-
-    if epoch % 100 == 0:
-        # Calculate Loss (Cross Entropy)
-        loss = -np.mean(np.sum(target * np.log(predictions[:-1] + 1e-9), axis=1))
-        print(f"Epoch {epoch}, Loss: {loss:.4f}")
+# --- FINAL EXECUTION ---
+print("\n" + "=" * 30)
+answer = ask_question(question)
+print(f"Final Prediction: {answer}")
