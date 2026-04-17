@@ -2,7 +2,7 @@ import numpy as np
 import re
 
 # --- 1. CONFIGURATION (The "Knobs") ---
-iterations = 1500  # Slide 6: Number of training tests
+iterations = 2000  # Slide 6: Number of training tests
 learning_rate = .6  # Slide 6: Size of the "Fix"
 temperature = 1.0  # Slide 16: Radicality/Creativity
 embedding_dim = 16  # Slide 9: Dimension of word "flavor"
