@@ -5,5 +5,7 @@ If we had attention loops for training, it would require a LOT of calculus
 
 In pyTorch, the loss.backward() and optimizer.step() did about 1,000 lines of calculus automatically
 To do that in NumPy, you would need to write the Chain Rule for every single matrix
+It is much clearer to show the Forward Pass (how it thinks) in NumPy
+And we just explain that the Backward Pass (how it learns) is handled by the optimizer's math
 
 Overall, it just reports a random word.
