@@ -3,6 +3,7 @@ This is my first AI creation. It is a simple transformer using deterministic (no
 
 **!!!WARNINGS!!!***
 * You will need to run the command: pip install torch OR pip3 install torch for main.py
+* You will need to run the command: pip install numpy or pip3 install numpy for numPyMain.py
 
 numPyMain.py is just main.py but turned into numPy for those who either want:
 1. A better understanding of it
