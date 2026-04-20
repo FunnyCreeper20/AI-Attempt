@@ -7,8 +7,8 @@ This is my first AI creation. It is a simple transformer using deterministic (no
 
 numPyMain.py is just main.py but turned into numPy for those who either want:
 1. A more "core" understanding of it
-2. A version that runs on a basic module
-3. A version that is pretty slow
+2. A version that runs on a basic module/import
+3. A version that is pretty slow because it doesn't use an ADAM backwards pass
 
 **To-Do**:
 * Add GeLU to the hidden layers
