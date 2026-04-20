@@ -6,7 +6,7 @@ This is my first AI creation. It is a simple transformer using deterministic (no
 * You will need to run the command: pip install numpy or pip3 install numpy for numPyMain.py
 
 numPyMain.py is just main.py but turned into numPy for those who either want:
-1. A better understanding of it
+1. A more "core" understanding of it
 2. A version that runs on a basic module
 3. A version that is pretty slow
 
