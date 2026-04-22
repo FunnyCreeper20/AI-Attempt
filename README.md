@@ -13,3 +13,6 @@ numPyMain.py is just main.py but turned into numPy for those who either want:
 **To-Do**:
 * Add GeLU to the hidden layers
 * Add BOS-Tokens
+* Save the training data on a server
+* Add an automatic pip
+* Add a dense layer
